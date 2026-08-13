@@ -83,9 +83,9 @@ spec:
             - name: RELATED_IMAGE_KUBEVIRT_VELERO_PLUGIN
               value: quay.io/konveyor/kubevirt-velero-plugin:oadp-1.6
             - name: RELATED_IMAGE_HYPERSHIFT_VELERO_PLUGIN
-              value: quay.io/konveyor/hypershift-oadp-plugin:latest
+              value: quay.io/konveyor/hypershift-oadp-plugin:oadp-1.6
             - name: RELATED_IMAGE_MUSTGATHER
-              value: quay.io/konveyor/oadp-must-gather:latest
+              value: quay.io/konveyor/oadp-must-gather:oadp-1.6
             - name: RELATED_IMAGE_NON_ADMIN_CONTROLLER
               value: quay.io/konveyor/oadp-non-admin:oadp-1.6
             - name: RELATED_IMAGE_VM_FILE_RESTORE_CONTROLLER
@@ -97,13 +97,13 @@ spec:
             - name: RELATED_IMAGE_VM_FILE_RESTORE_BROWSER
               value: quay.io/konveyor/oadp-vmfr-access-filebrowser:oadp-1.6
             - name: RELATED_IMAGE_CONSOLE_CLI_DOWNLOAD
-              value: quay.io/konveyor/oadp-cli-binaries:latest
+              value: quay.io/konveyor/oadp-cli-binaries:oadp-1.6
             - name: RELATED_IMAGE_VMDP_CLI_DOWNLOAD
-              value: quay.io/konveyor/oadp-vmdp-binaries:latest
+              value: quay.io/konveyor/oadp-vmdp-binaries:oadp-1.6
             - name: RELATED_IMAGE_KUBEVIRT_DATAMOVER_CONTROLLER
-              value: quay.io/konveyor/kubevirt-datamover-controller:latest
+              value: quay.io/konveyor/kubevirt-datamover-controller:oadp-1.6
             - name: RELATED_IMAGE_KUBEVIRT_DATAMOVER_PLUGIN
-              value: quay.io/konveyor/kubevirt-datamover-plugin:latest
+              value: quay.io/konveyor/kubevirt-datamover-plugin:oadp-1.6
           args:
             - --leader-elect
           image: controller:latest

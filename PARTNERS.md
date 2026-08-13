@@ -13,27 +13,17 @@ better stability and maintainability.
 ## Version Mapping
 
 ### Current and Planned Supported Versions
-| OpenShift Version | OADP Version | Velero Version | Estimated Release Timeline [1]| Extended lifecycle support |
-|-------------------|--------------|----------------|--------------------------------|-----------------------------|
-| 4.14              | 1.3, 1.4     | v1.12, v1.14   | released                      |                             |
-| 4.16              | 1.4          | v1.14          | released                      | yes                         |
-| 4.17              | 1.4          | v1.14          | released                      |                             |
-| 4.18              | 1.4          | v1.14          | released                      | yes                         |
-| 4.19              | 1.5          | v1.16          | released                      |                             |
-| 4.20              | 1.5          | v1.16          | released                      | yes                         |
-| 4.21              | 1.5          | v1.16          | Q1 2026                       |                             |
-| 4.22              | 1.6          | v1.18          | Q3 2026                       | yes                         |
-| 4.23              | 1.6          | v1.18          | Q1 2027                       |                             |
-| 5.0               | 1.6          | v1.18          | Q3 2026                       | yes                         |
-| 5.1               | 1.7          | v1.20          | Q2 2027                       |                             |
-| 5.2               | 1.7          | v1.20          | Q3 2027                       | yes                         |
-| 5.3               | 1.8          | TBD            | TBD                           |                             |
-| 5.4               | 1.8          | TBD            | TBD                           |                             |
-| 5.5               | 1.8          | TBD            | TBD                           | yes                         |
-| 5.6               | 1.9          | TBD            | TBD                           |                             |
-| 5.7               | 1.9          | TBD            | TBD                           |                             |
-| 5.8               | 1.9          | TBD            | TBD                           | yes                         |
-| 5.9               | 1.10         | TBD            | TBD                           |                             |
+| OpenShift Version | OADP Version | Velero Version | Estimated Release Timeline [1]|
+|-------------------|--------------|----------------|-------------------------------|
+| 4.14              | 1.3, 1.4     | v1.12, v1.14   | released                      |
+| 4.16              | 1.4          | v1.14          | released                      | 
+| 4.17              | 1.4          | v1.14          | released                      |
+| 4.18              | 1.4          | v1.14          | released                      |
+| 4.19              | 1.5          | v1.16          | released                      |
+| 4.20              | 1.5          | v1.16          | released                      |
+| 4.21              | 1.5          | v1.16          | Q1 2026                       |
+| 4.22              | 1.6          | v1.18          | Q3 2026                       |
+| 4.23              | 1.6          | v1.18          | Q1 2027                       | 
 
 ### OADP Plugins of interest
 | OpenShift Version | OADP Version | Velero Version | kubevirt-velero-plugin | hypershift-oadp-plugin   | channel               |
@@ -59,7 +49,7 @@ to their target OpenShift version
     repository.  The next release will be available for install via the `oadp-dev` 
     branch until such time the next release branch is created, the `oadp-1.<version>+1` 
     branch will be made available for install.
-     - latest branched version is [oadp-1.6](https://github.com/openshift/oadp-operator/tree/oadp-1.6)
+     - latest branched version is [oadp-1.4](https://github.com/openshift/oadp-operator/tree/oadp-1.4)
 
 ## Action Items for Partners
 1. Update your test matrices to reflect the new version pairing strategy
@@ -83,7 +73,7 @@ to their target OpenShift version
 ## Upgrade workflow
 ### Automatic upgrade: 
 
-Automatic upgrades are expected to be available in OADP 1.6.0 once OADP can move from sqlite catalogs to [file based catalogs](https://olm.operatorframework.io/docs/reference/file-based-catalogs/).
+Automatic upgrades are expected to be available in OADP 1.6.0 once OADP can move from sqllite catalogs to [file based catalogs](https://olm.operatorframework.io/docs/reference/file-based-catalogs/).
 
 ### Customer upgrades to OCP 4.19 while on OADP's stable-1.4 channel
 

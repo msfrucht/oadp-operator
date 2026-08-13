@@ -16,6 +16,7 @@ deletebackuprequests                                      velero.io/v1          
 downloadrequests                                          velero.io/v1                                    true         DownloadRequest
 podvolumebackups                                          velero.io/v1                                    true         PodVolumeBackup
 podvolumerestores                                         velero.io/v1                                    true         PodVolumeRestore
+resticrepositories                                        velero.io/v1                                    true         ResticRepository
 restores                                                  velero.io/v1                                    true         Restore
 schedules                                                 velero.io/v1                                    true         Schedule
 serverstatusrequests                  ssr                 velero.io/v1                                    true         ServerStatusRequest
@@ -38,7 +39,7 @@ DESCRIPTION:
 
 FIELDS:
    dataMover	<Object>
-     Contains data mover specific configurations (deprecated: the VSM/VolSync data mover was removed in OADP 1.3; use Velero Built-in Data Mover instead)
+     Contains data mover specific configurations
 ```
 
 See also [![Go Reference](https://pkg.go.dev/badge/github.com/openshift/oadp-operator.svg)](https://pkg.go.dev/github.com/openshift/oadp-operator@oadp-dev) for a deeper dive.

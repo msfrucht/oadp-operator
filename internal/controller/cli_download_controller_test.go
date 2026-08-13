@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/go-logr/logr"
@@ -17,7 +16,6 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // getDownloadTestScheme returns a scheme with the console/route API groups
@@ -33,12 +31,235 @@ func getDownloadTestScheme(t *testing.T) *runtime.Scheme {
 	return scheme.Scheme
 }
 
-// newTestCLIRoute returns a CLI server route with a hostname already assigned,
-// so reconcileCLIResources doesn't hit its hostname-assignment retry/backoff path.
+// newTestCLIRoute returns a CLI server route with a hostname already
+// assigned, so reconcileCLIResources doesn't hit its hostname-assignment
+// retry/backoff path.
 func newTestCLIRoute(namespace string) *routev1.Route {
 	route := buildCLIServerRoute(namespace)
 	route.Spec.Host = "cli.example.com"
 	return route
+}
+
+func TestBuildCLIServerDeployment_ServiceAccount(t *testing.T) {
+	deployment := buildCLIServerDeployment("openshift-adp", "test-image")
+	podSpec := deployment.Spec.Template.Spec
+
+	if podSpec.ServiceAccountName != cliServerServiceAccountName {
+		t.Errorf("expected serviceAccountName %q, got %q", cliServerServiceAccountName, podSpec.ServiceAccountName)
+	}
+	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken to be false")
+	}
+}
+
+func TestBuildCLIServerServiceAccount(t *testing.T) {
+	const testNamespace = "openshift-adp"
+
+	sa := buildCLIServerServiceAccount(testNamespace)
+
+	if sa.Name != cliServerServiceAccountName {
+		t.Errorf("expected name %q, got %q", cliServerServiceAccountName, sa.Name)
+	}
+	if sa.Namespace != testNamespace {
+		t.Errorf("expected namespace %q, got %q", testNamespace, sa.Namespace)
+	}
+	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken to be false")
+	}
+	if sa.Labels[managedByLabel] != operatorName {
+		t.Errorf("expected label %q=%q, got %q", managedByLabel, operatorName, sa.Labels[managedByLabel])
+	}
+}
+
+// newCLITestScheme registers only corev1 and appsv1 — enough for the
+// ServiceAccount and Deployment steps of reconcileCLIResources to succeed,
+// but not routev1/consolev1. This means reconcileCLIResources will return an
+// error once it reaches the Route step (step 4), which is expected and
+// ignored: by that point the ServiceAccount step (step 1) has already run
+// and persisted its result, which is what these tests verify.
+func newCLITestScheme(t *testing.T) *runtime.Scheme {
+	testScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := appsv1.AddToScheme(testScheme); err != nil {
+		t.Fatal(err)
+	}
+	return testScheme
+}
+
+func newCLITestOperatorDeployment() *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "oadp-operator",
+			Namespace: "openshift-adp",
+			UID:       types.UID("test-operator-uid"),
+		},
+	}
+}
+
+// TestReconcileCLIResources_CreatesServiceAccountWhenMissing verifies the
+// ServiceAccount is created with the desired state when it doesn't exist.
+func TestReconcileCLIResources_CreatesServiceAccountWhenMissing(t *testing.T) {
+	const ns = "openshift-adp"
+	testScheme := newCLITestScheme(t)
+	operatorDeploy := newCLITestOperatorDeployment()
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy).Build()
+
+	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
+	// Expect an error once reconcileCLIResources reaches the unregistered
+	// Route/ConsoleCLIDownload steps — irrelevant to this test.
+	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
+		t.Logf("reconcileCLIResources returned expected error (Route/ConsoleCLIDownload step unregistered in test scheme): %v", err)
+	}
+
+	got := &corev1.ServiceAccount{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
+		t.Fatalf("failed to get created SA: %v", err)
+	}
+	if got.AutomountServiceAccountToken == nil || *got.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken=false on created SA")
+	}
+	if got.Labels[managedByLabel] != operatorName {
+		t.Errorf("expected label %q=%q, got %q", managedByLabel, operatorName, got.Labels[managedByLabel])
+	}
+	if len(got.OwnerReferences) == 0 || got.OwnerReferences[0].UID != operatorDeploy.UID {
+		t.Error("expected owner reference to be set on created SA")
+	}
+}
+
+// TestReconcileCLIResources_FixesExistingServiceAccountDrift verifies that
+// when the ServiceAccount already exists with AutomountServiceAccountToken
+// unset/true, missing labels, and a missing owner reference, all three are
+// corrected by reconcileCLIResources.
+func TestReconcileCLIResources_FixesExistingServiceAccountDrift(t *testing.T) {
+	const ns = "openshift-adp"
+	trueVal := true
+	testScheme := newCLITestScheme(t)
+	operatorDeploy := newCLITestOperatorDeployment()
+
+	existing := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cliServerServiceAccountName,
+			Namespace: ns,
+			// no labels, no owner reference
+		},
+		AutomountServiceAccountToken: &trueVal, // wrong: should be false
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy, existing).Build()
+
+	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
+	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
+		t.Logf("reconcileCLIResources returned expected error (Route/ConsoleCLIDownload step unregistered in test scheme): %v", err)
+	}
+
+	got := &corev1.ServiceAccount{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
+		t.Fatalf("failed to get SA: %v", err)
+	}
+	if got.AutomountServiceAccountToken == nil || *got.AutomountServiceAccountToken {
+		t.Error("expected AutomountServiceAccountToken to be corrected to false")
+	}
+	if got.Labels[managedByLabel] != operatorName {
+		t.Errorf("expected label %q=%q to be added, got %q", managedByLabel, operatorName, got.Labels[managedByLabel])
+	}
+	found := false
+	for _, ref := range got.OwnerReferences {
+		if ref.UID == operatorDeploy.UID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected owner reference to be added")
+	}
+}
+
+// TestReconcileCLIResources_FixesMissingOwnerReferenceOnly is the key
+// regression test: an existing SA that already has the correct automount
+// setting and labels, but is MISSING the owner reference, must still be
+// updated. This guards against a bug where SetOwnerReference was called
+// before checking whether the reference was already present, which always
+// found a match (since SetOwnerReference had just added it) and silently
+// skipped the Update() call.
+func TestReconcileCLIResources_FixesMissingOwnerReferenceOnly(t *testing.T) {
+	const ns = "openshift-adp"
+	falseVal := false
+	testScheme := newCLITestScheme(t)
+	operatorDeploy := newCLITestOperatorDeployment()
+
+	existing := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cliServerServiceAccountName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"app":          "oadp-cli",
+				managedByLabel: operatorName,
+			},
+			// everything else already matches desired state — only the
+			// owner reference is missing
+		},
+		AutomountServiceAccountToken: &falseVal,
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy, existing).Build()
+
+	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
+	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
+		t.Logf("reconcileCLIResources returned expected error (Route/ConsoleCLIDownload step unregistered in test scheme): %v", err)
+	}
+
+	got := &corev1.ServiceAccount{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
+		t.Fatalf("failed to get SA: %v", err)
+	}
+
+	found := false
+	for _, ref := range got.OwnerReferences {
+		if ref.UID == operatorDeploy.UID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected owner reference to operatorDeployment to be added, but it was missing after reconcile")
+	}
+}
+
+// TestReconcileCLIResources_NoopWhenServiceAccountAlreadyCorrect verifies a
+// ServiceAccount already matching the desired state is not unnecessarily
+// updated (no ResourceVersion bump).
+func TestReconcileCLIResources_NoopWhenServiceAccountAlreadyCorrect(t *testing.T) {
+	const ns = "openshift-adp"
+	testScheme := newCLITestScheme(t)
+	operatorDeploy := newCLITestOperatorDeployment()
+
+	desired := buildCLIServerServiceAccount(ns)
+	desired.OwnerReferences = []metav1.OwnerReference{
+		{UID: operatorDeploy.UID, Name: operatorDeploy.Name, Kind: "Deployment", APIVersion: "apps/v1"},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy, desired.DeepCopy()).Build()
+
+	before := &corev1.ServiceAccount{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, before); err != nil {
+		t.Fatalf("failed to get SA: %v", err)
+	}
+
+	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
+	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
+		t.Logf("reconcileCLIResources returned expected error (Route/ConsoleCLIDownload step unregistered in test scheme): %v", err)
+	}
+
+	after := &corev1.ServiceAccount{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, after); err != nil {
+		t.Fatalf("failed to get SA: %v", err)
+	}
+
+	if before.ResourceVersion != after.ResourceVersion {
+		t.Errorf("expected no update (ResourceVersion unchanged), got before=%s after=%s", before.ResourceVersion, after.ResourceVersion)
+	}
 }
 
 func TestBuildCLIServerDeployment_StartupProbe(t *testing.T) {
@@ -209,245 +430,5 @@ func TestReconcileCLIResources_DoesNotOverwriteExistingProbes(t *testing.T) {
 	}
 	if container.StartupProbe.InitialDelaySeconds != 99 {
 		t.Errorf("expected existing StartupProbe to be preserved, got InitialDelaySeconds=%d", container.StartupProbe.InitialDelaySeconds)
-	}
-}
-
-func TestBuildCLIServerDeployment_ServiceAccount(t *testing.T) {
-	deployment := buildCLIServerDeployment("openshift-adp", "test-image")
-	podSpec := deployment.Spec.Template.Spec
-
-	if podSpec.ServiceAccountName != cliServerServiceAccountName {
-		t.Errorf("expected serviceAccountName %q, got %q", cliServerServiceAccountName, podSpec.ServiceAccountName)
-	}
-	if podSpec.AutomountServiceAccountToken == nil || *podSpec.AutomountServiceAccountToken {
-		t.Error("expected AutomountServiceAccountToken to be false")
-	}
-}
-
-func TestBuildCLIServerServiceAccount(t *testing.T) {
-	const testNamespace = "openshift-adp"
-
-	sa := buildCLIServerServiceAccount(testNamespace)
-
-	if sa.Name != cliServerServiceAccountName {
-		t.Errorf("expected name %q, got %q", cliServerServiceAccountName, sa.Name)
-	}
-	if sa.Namespace != testNamespace {
-		t.Errorf("expected namespace %q, got %q", testNamespace, sa.Namespace)
-	}
-	if sa.AutomountServiceAccountToken == nil || *sa.AutomountServiceAccountToken {
-		t.Error("expected AutomountServiceAccountToken to be false")
-	}
-	if sa.Labels[managedByLabel] != operatorName {
-		t.Errorf("expected label %q=%q, got %q", managedByLabel, operatorName, sa.Labels[managedByLabel])
-	}
-}
-
-// newCLITestScheme registers only corev1 and appsv1 — enough for the
-// ServiceAccount and Deployment steps of reconcileCLIResources to succeed,
-// but not routev1/consolev1. This means reconcileCLIResources will return an
-// error once it reaches the Route step (step 4), which is expected and
-// ignored: by that point the ServiceAccount step (step 1) has already run
-// and persisted its result, which is what these tests verify.
-func newCLITestScheme(t *testing.T) *runtime.Scheme {
-	testScheme := runtime.NewScheme()
-	if err := corev1.AddToScheme(testScheme); err != nil {
-		t.Fatal(err)
-	}
-	if err := appsv1.AddToScheme(testScheme); err != nil {
-		t.Fatal(err)
-	}
-	return testScheme
-}
-
-// assertExpectedRouteSchemeError fails the test unless err is the intentional
-// error caused by newCLITestScheme omitting routev1/consolev1: reconcile is
-// expected to fail once it reaches the Route step, but only after the
-// ServiceAccount/Deployment steps under test have already run and persisted
-// their results. Any other error indicates a real regression in an earlier
-// step and must not be silently treated as "expected".
-func assertExpectedRouteSchemeError(t *testing.T, err error) {
-	t.Helper()
-	if !strings.Contains(err.Error(), "no kind is registered for the type v1.Route") {
-		t.Fatalf("expected error from unregistered Route scheme, got unexpected error: %v", err)
-	}
-	t.Logf("got expected error (Route/ConsoleCLIDownload step unregistered in test scheme): %v", err)
-}
-
-func newCLITestOperatorDeployment() *appsv1.Deployment {
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "oadp-operator",
-			Namespace: "openshift-adp",
-			UID:       types.UID("test-operator-uid"),
-		},
-	}
-}
-
-// TestReconcileCLIResources_CreatesServiceAccountWhenMissing verifies the
-// ServiceAccount is created with the desired state when it doesn't exist.
-func TestReconcileCLIResources_CreatesServiceAccountWhenMissing(t *testing.T) {
-	const ns = "openshift-adp"
-	testScheme := newCLITestScheme(t)
-	operatorDeploy := newCLITestOperatorDeployment()
-	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy).Build()
-
-	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
-	// Expect an error once reconcileCLIResources reaches the unregistered
-	// Route/ConsoleCLIDownload steps — irrelevant to this test.
-	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
-		assertExpectedRouteSchemeError(t, err)
-	}
-
-	got := &corev1.ServiceAccount{}
-	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
-		t.Fatalf("failed to get created SA: %v", err)
-	}
-	if got.AutomountServiceAccountToken == nil || *got.AutomountServiceAccountToken {
-		t.Error("expected AutomountServiceAccountToken=false on created SA")
-	}
-	if got.Labels[managedByLabel] != operatorName {
-		t.Errorf("expected label %q=%q, got %q", managedByLabel, operatorName, got.Labels[managedByLabel])
-	}
-	if len(got.OwnerReferences) == 0 || got.OwnerReferences[0].UID != operatorDeploy.UID {
-		t.Error("expected owner reference to be set on created SA")
-	}
-}
-
-// TestReconcileCLIResources_FixesExistingServiceAccountDrift verifies that
-// when the ServiceAccount already exists with AutomountServiceAccountToken
-// unset/true, missing labels, and a missing owner reference, all three are
-// corrected by reconcileCLIResources.
-func TestReconcileCLIResources_FixesExistingServiceAccountDrift(t *testing.T) {
-	const ns = "openshift-adp"
-	trueVal := true
-	testScheme := newCLITestScheme(t)
-	operatorDeploy := newCLITestOperatorDeployment()
-
-	existing := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cliServerServiceAccountName,
-			Namespace: ns,
-			// no labels, no owner reference
-		},
-		AutomountServiceAccountToken: &trueVal, // wrong: should be false
-	}
-
-	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy, existing).Build()
-
-	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
-	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
-		assertExpectedRouteSchemeError(t, err)
-	}
-
-	got := &corev1.ServiceAccount{}
-	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
-		t.Fatalf("failed to get SA: %v", err)
-	}
-	if got.AutomountServiceAccountToken == nil || *got.AutomountServiceAccountToken {
-		t.Error("expected AutomountServiceAccountToken to be corrected to false")
-	}
-	if got.Labels[managedByLabel] != operatorName {
-		t.Errorf("expected label %q=%q to be added, got %q", managedByLabel, operatorName, got.Labels[managedByLabel])
-	}
-	found := false
-	for _, ref := range got.OwnerReferences {
-		if ref.UID == operatorDeploy.UID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected owner reference to be added")
-	}
-}
-
-// TestReconcileCLIResources_FixesMissingOwnerReferenceOnly is the key
-// regression test: an existing SA that already has the correct automount
-// setting and labels, but is MISSING the owner reference, must still be
-// updated. This guards against a bug where SetOwnerReference was called
-// before checking whether the reference was already present, which always
-// found a match (since SetOwnerReference had just added it) and silently
-// skipped the Update() call.
-func TestReconcileCLIResources_FixesMissingOwnerReferenceOnly(t *testing.T) {
-	const ns = "openshift-adp"
-	falseVal := false
-	testScheme := newCLITestScheme(t)
-	operatorDeploy := newCLITestOperatorDeployment()
-
-	existing := &corev1.ServiceAccount{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cliServerServiceAccountName,
-			Namespace: ns,
-			Labels: map[string]string{
-				"app":          "oadp-cli",
-				managedByLabel: operatorName,
-			},
-			// everything else already matches desired state — only the
-			// owner reference is missing
-		},
-		AutomountServiceAccountToken: &falseVal,
-	}
-
-	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(operatorDeploy, existing).Build()
-
-	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
-	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
-		assertExpectedRouteSchemeError(t, err)
-	}
-
-	got := &corev1.ServiceAccount{}
-	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: cliServerServiceAccountName, Namespace: ns}, got); err != nil {
-		t.Fatalf("failed to get SA: %v", err)
-	}
-
-	found := false
-	for _, ref := range got.OwnerReferences {
-		if ref.UID == operatorDeploy.UID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected owner reference to operatorDeployment to be added, but it was missing after reconcile")
-	}
-}
-
-// TestReconcileCLIResources_NoopWhenServiceAccountAlreadyCorrect verifies a
-// ServiceAccount already matching the desired state is not unnecessarily
-// updated. Asserts on the number of Update calls the fake client actually
-// received (via an interceptor) rather than comparing ResourceVersion
-// before/after, since the fake client's ResourceVersion bookkeeping is only
-// an approximation of a real API server's and isn't a reliable signal that
-// no update occurred.
-func TestReconcileCLIResources_NoopWhenServiceAccountAlreadyCorrect(t *testing.T) {
-	const ns = "openshift-adp"
-	testScheme := newCLITestScheme(t)
-	operatorDeploy := newCLITestOperatorDeployment()
-
-	desired := buildCLIServerServiceAccount(ns)
-	desired.OwnerReferences = []metav1.OwnerReference{
-		{UID: operatorDeploy.UID, Name: operatorDeploy.Name, Kind: "Deployment", APIVersion: "apps/v1"},
-	}
-
-	updateCalls := 0
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(testScheme).
-		WithObjects(operatorDeploy, desired.DeepCopy()).
-		WithInterceptorFuncs(interceptor.Funcs{
-			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-				updateCalls++
-				return c.Update(ctx, obj, opts...)
-			},
-		}).
-		Build()
-
-	setup := &CLIDownloadSetup{Client: fakeClient, Namespace: ns, Log: logr.Discard()}
-	if err := setup.reconcileCLIResources(context.Background(), operatorDeploy, "test-image"); err != nil {
-		assertExpectedRouteSchemeError(t, err)
-	}
-
-	if updateCalls != 0 {
-		t.Errorf("expected no Update calls when ServiceAccount already matches desired state, got %d", updateCalls)
 	}
 }

@@ -18,7 +18,7 @@ If you need help, first search if there is [already an issue filed](https://issu
     - [Errors in the Velero Pod](#errors-in-the-velero-pod)
     - [Errors in Backup Logs](#errors-in-backup-logs)
     - [Backup/Restore is Stuck In Progress](#backuprestore-is-stuck-in-progress)
-    - [Restic - NFS Volumes and rootSquash](#restic---nfs-volumes-and-rootsquash) *(Note: restic uploader is deprecated; use kopia instead. See [kopia troubleshooting](kopia_troubleshooting.md).)*
+    - [Restic - NFS Volumes and rootSquash](#restic---nfs-volumes-and-rootsquash)
     - [Issue with Backup/Restore of DeploymentConfig using Restic](#issue-with-backuprestore-of-deploymentconfig-using-restic)
     - [New Restic Backup Partially Failing After Clearing Bucket](#new-restic-backup-partially-failing-after-clearing-bucket)
     - [Restic Restore Partially Failing on OCP 4.14 Due to Changed PSA Policy](#restic-restore-partially-failing-on-ocp-414-due-to-changed-psa-policy)
@@ -36,14 +36,18 @@ If you need help, first search if there is [already an issue filed](https://issu
     oc logs -f deploy/velero -n openshift-adp
     ```
     
-1. OADP CLI commands
+1. Velero commands
+    -  Alias the velero command: 
+    ```
+    alias velero='oc -n openshift-adp exec deployment/velero -c velero -it -- ./velero'
+    ```
     - Get the backup details: 
     ```
-    oc oadp backup describe <backupName> --details
+    velero backup describe <backupName> --details
     ```
     - Get the backup logs: 
     ```
-    oc oadp backup logs <backupName>
+    velero backup logs <backupName>
     ```
 1. Restic backup debug
     - Please refer to the [restic troubleshooting tips page](restic_troubleshooting.md)
@@ -69,14 +73,18 @@ This section includes how to debug a failed restore. For more specific issues re
     oc logs -f deployment.apps/velero -n openshift-adp
     ```
     
-1. OADP CLI commands
+1. Velero commands
+    - Alias the velero command: 
+    ```
+    alias velero='oc -n openshift-adp exec deployment/velero -c velero -it -- ./velero'
+    ```
     - Get the restore details: 
     ```
-    oc oadp restore describe <restoreName> --details
+    velero restore describe <restoreName> --details
     ```
-    - Get the restore logs: 
+    - Get the backup logs: 
     ```
-    oc oadp restore logs <restoreName>
+    velero backup logs <restoreName>
     ```
  
 ## Deleting Backups
@@ -98,14 +106,14 @@ To delete an OADP backup, the related objects and off cluster artifacts.
       backupName: <backupName>
     ```
 
-  1. OADP CLI commands:
+  1. Velero commands:
       ```
-      oc oadp backup delete --help
+      velero backup delete --help
       ```
 
       Delete the backup:  
       ```
-      oc oadp backup delete <backupName>
+      velero backup delete <backupName>
       ```
 
 The related artifacts will be deleted at different times depending on the backup method:
@@ -186,20 +194,20 @@ oc delete backuprepository <backupRepositoryName> -n openshift-adp
 
   - For further details on your backup, run the command:
   ```
-  oc oadp backup describe <backup-name> --details  # --details is optional
+  velero backup describe <backup-name> --details  # --details is optional
   ```
   - For more details on your restore, run:
   ```
-  oc oadp restore describe <backup-name> --details  # --details is optional
+  velero restore describe <backup-name> --details  # --details is optional
   ```
 
   - You can delete the backup with the command: 
   ```
-  oc oadp backup delete <backupName>
+  velero backup delete <backupName>
   ```
   - You can delete the restore with the command: 
   ```
-  oc oadp restore delete <restoreName> 
+  velero delete restore <restoreName> 
   ```
 
 
@@ -254,7 +262,7 @@ oc delete backuprepository <backupRepositoryName> -n openshift-adp
 
   - Running the command:
   ```
-  oc oadp backup describe <backup-name> --details 
+  velero backup describe <backup-name> --details 
   ```
   results in:
   ```
@@ -296,27 +304,3 @@ oc delete backuprepository <backupRepositoryName> -n openshift-adp
   
   - This error can occur regardless of the SCC if the application is not aligned with the security standards. Please ensure that the security standards for the application pods are aligned, as provided in the link below, to prevent deployment warnings.  
   https://access.redhat.com/solutions/7002730
-
-### Warning: unknown field in DPA CR
-
-When applying a DPA CR you may see warnings like:
-
-```
-Warning: unknown field "spec.configuration.nodeAgent.<fieldName>"
-```
-
-This means the field is placed at the wrong level in the DPA spec. Use `oc explain` to discover available fields at any level:
-
-```
-oc explain dataprotectionapplication.spec.configuration.nodeAgent
-oc explain dataprotectionapplication.spec.configuration.nodeAgent.podConfig
-oc explain dataprotectionapplication.spec.configuration.velero
-```
-
-You can also inspect the full CRD schema with:
-
-```
-oc get crd dataprotectionapplications.oadp.openshift.io -o yaml
-```
-
-See [docs/config/pod_config.md](config/pod_config.md) and the [Red Hat PodConfig API reference](https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html/backup_and_restore/oadp-application-backup-and-restore#podconfig-type_oadp-api) for full documentation on `podConfig` fields.

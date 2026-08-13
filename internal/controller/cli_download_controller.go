@@ -167,23 +167,25 @@ func (c *CLIDownloadSetup) reconcileCLIResources(ctx context.Context, operatorDe
 		c.Log.Info("Created CLI server deployment", "image", cliServerImage)
 	} else if err != nil {
 		return fmt.Errorf("failed to get CLI server deployment: %w", err)
-	} else if idx := findContainerIndexByName(deployment.Spec.Template.Spec.Containers, "oadp-cli-server"); idx != -1 {
+	} else {
 		// Deployment exists from a version before probes/service account were added; backfill them.
 		desired := buildCLIServerDeployment(c.Namespace, cliServerImage)
-		desiredContainer := desired.Spec.Template.Spec.Containers[0]
-		currentContainer := &deployment.Spec.Template.Spec.Containers[idx]
 		needsUpdate := false
-		if currentContainer.ReadinessProbe == nil && desiredContainer.ReadinessProbe != nil {
-			currentContainer.ReadinessProbe = desiredContainer.ReadinessProbe
-			needsUpdate = true
-		}
-		if currentContainer.LivenessProbe == nil && desiredContainer.LivenessProbe != nil {
-			currentContainer.LivenessProbe = desiredContainer.LivenessProbe
-			needsUpdate = true
-		}
-		if currentContainer.StartupProbe == nil && desiredContainer.StartupProbe != nil {
-			currentContainer.StartupProbe = desiredContainer.StartupProbe
-			needsUpdate = true
+		if idx := findContainerIndexByName(deployment.Spec.Template.Spec.Containers, "oadp-cli-server"); idx != -1 {
+			desiredContainer := desired.Spec.Template.Spec.Containers[0]
+			currentContainer := &deployment.Spec.Template.Spec.Containers[idx]
+			if currentContainer.ReadinessProbe == nil && desiredContainer.ReadinessProbe != nil {
+				currentContainer.ReadinessProbe = desiredContainer.ReadinessProbe
+				needsUpdate = true
+			}
+			if currentContainer.LivenessProbe == nil && desiredContainer.LivenessProbe != nil {
+				currentContainer.LivenessProbe = desiredContainer.LivenessProbe
+				needsUpdate = true
+			}
+			if currentContainer.StartupProbe == nil && desiredContainer.StartupProbe != nil {
+				currentContainer.StartupProbe = desiredContainer.StartupProbe
+				needsUpdate = true
+			}
 		}
 		if deployment.Spec.Template.Spec.ServiceAccountName != cliServerServiceAccountName {
 			deployment.Spec.Template.Spec.ServiceAccountName = desired.Spec.Template.Spec.ServiceAccountName
@@ -199,7 +201,7 @@ func (c *CLIDownloadSetup) reconcileCLIResources(ctx context.Context, operatorDe
 			if err := c.Client.Update(ctx, deployment); err != nil {
 				return fmt.Errorf("failed to update CLI server deployment: %w", err)
 			}
-			c.Log.Info("Updated CLI server deployment with probes, service account, and/or automount setting")
+			c.Log.Info("Updated CLI server deployment with probes and/or service account")
 		}
 	}
 
@@ -432,17 +434,6 @@ func buildCLIServerDeployment(namespace, image string) *appsv1.Deployment {
 								},
 								ReadOnlyRootFilesystem: &readOnlyRootFilesystem,
 							},
-							StartupProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/",
-										Port: intstr.FromString("http"),
-									},
-								},
-								InitialDelaySeconds: 5,
-								PeriodSeconds:       5,
-								FailureThreshold:    12,
-							},
 							ReadinessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
@@ -462,6 +453,17 @@ func buildCLIServerDeployment(namespace, image string) *appsv1.Deployment {
 								},
 								InitialDelaySeconds: 15,
 								PeriodSeconds:       20,
+							},
+							StartupProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Path: "/",
+										Port: intstr.FromString("http"),
+									},
+								},
+								InitialDelaySeconds: 5,
+								PeriodSeconds:       5,
+								FailureThreshold:    12,
 							},
 						},
 					},

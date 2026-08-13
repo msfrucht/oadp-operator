@@ -411,12 +411,12 @@ The installation process is similar for all cloud providers, with cloud-specific
 
 1. Create a test backup:
    ```bash
-   oc oadp backup create test-backup --include-namespaces=<namespace>
+   velero backup create test-backup --include-namespaces=<namespace>
    ```
 
 2. Verify the backup completed:
    ```bash
-   oc oadp backup describe test-backup
+   velero backup describe test-backup
    ```
 
 ## Troubleshooting

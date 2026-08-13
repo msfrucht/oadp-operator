@@ -21,7 +21,7 @@ Taking a VolumeSnapshot and then using kopia to process the entire volume and co
 - As a user I want to use OADP to trigger backups that will back up volume data using kubevirt tooling rather than CSI snapshots
   - Volume backups will be incremental when possible (first backup for a given volume will be full, subsequent backups for that same volume will be incremental)
   - Assuming that kubevirt incremental volume backups should be much faster than CSI snapshots followed by incremental kopia snapshot copy, the expectation is that users might run kubevirt datamover backups more frequently than they would for CSI-based backups.
-  - Users should set the volume policy action to `"custom"` with `"datamover: kubevirt"` in the action parameters for VM PVCs in the backup's resource/volume policy configuration. This prevents Velero from also taking CSI snapshots or fs-backups of the same volumes (the BIA plugin skips any PVC whose action is not `"kubevirt"` or `"skip"`).
+  - If users are backing up more frequently with this method, they should ensure that they are not using CSI snapshots or fs-backup via the resource/volume policy configuration in the backup.
 
 ```
   Key Differences between CSI and KubeVirt incremental snapshots
@@ -59,18 +59,12 @@ Taking a VolumeSnapshot and then using kopia to process the entire volume and co
     - Note that unlike the built-in datamover, this DataUpload is tied to a VM (which could include multiple PVCs) rather than to a single PVC.
   - An annotation will be added to the DataUpload identifying the VirtualMachine we're backing up.
   - Add `velerov1api.DataUploadNameAnnotation` to VirtualMachine
-  - Add `velerov1api.PVCNamespaceNameLabel` annotation to VirtualMachine (doesn't need to be a label, since we're just using it to figure out what label selector to use for the ConfigMap on restore).
   - OperationID will be created and returned similar to what's done with the CSI PVC plugin, and the async operation Progress method will report on progress based on the DU status (similar to CSI PVC plugin)
-- PVC BIA plugin
-  - Add `kubevirt-datamover-vm` annotation to PVC with the `VirtualMachine` name to signal to RIA that we need to remove `VolumeName` and set `Selector.MatchLabels` on PVC.
 - VirtualMachine RIA plugin
+  - (further investigation still needed on exactly what's needed here)
   - Similar in functionality to csi PVC restore action
-  - Create DD based on DU annotation and DU ConfigMap
-  - Need to confirm that VM resource has the PVC name annotation added by the BIA plugin
-- PVC RIA plugin
-  - If PVC has `kubevirt-datamover-vm` annotation, need to do the following:
-    - set spec.VolumeName to ""
-	- set selector with MatchLabels to match PV that will be created by restore controller
+  - Create temporary PVC (needed, or is this handled by controller?)
+  - Create DD based on DU annotation and DU ConfigMap (this may be handled already by existing DU RIA)
 - VirtualMachineBackup/VirtualMachineBackupTracker RIA plugin
   - Simple RIA that discards VMB/VMBT resources on restore
   - We don't want to restore these because they would kick off another VMBackup action.
@@ -78,7 +72,6 @@ Taking a VolumeSnapshot and then using kopia to process the entire volume and co
 ### Kubevirt Datamover Controller
 - Responsible for reconciling DataUploads/DataDownloads where `Spec.DataMover` is "kubevirt"
 - Configurable concurrency limits: concurrent-vm-backups and concurrent-vm-datauploads
-- We need the `qemu-img` binary built into the controller image.
 - DataUpload reconciler (backup):
   - create the (temporary) PVC.
   - identify the VirtualMachine from the PVC metadata.
@@ -94,46 +87,18 @@ Taking a VolumeSnapshot and then using kopia to process the entire volume and co
     - We need to properly handle cases where we attempt an incremental backup but a full backup is taken instead (checkpoint lost, CSI snapshot restore since last checkpoint, VM restart, etc.)
     - Aborted backups also need to be handled (resulting in a failed PVC backup on the Velero side)
 - DataDownload reconciler (restore)
-  - Identify the VM from the DD.
-  - Pull BSL metadata for the VM and backup
-  - Create the temporary PVC to download the qcow2 files onto.
-    - PV here is also temporary
-	- PVC size based on the size of the qcow2 files in BSL needed for restore as well as the PVC sizes
-    - For each PVC, calculate the sum of all qcow2 files added to the PVC size, and then add 10% as a buffer. If there are multiple PVCs, take the max value, as we can process one PVC at a time, so we don't need to hold files for all PVCs on the temp disk at the same time.
-  - Create temporary PVCs for each PVC in the VM (identified from BSL metadata).
-    - These need to be mounted as block mode volumes.
-    - PV will be bound to workload PVCs after restore, similar to velero datamover.
-	- To facilitate PV reattachment, we need a similar approach to the upstream velero exposer logic:
-      - The `DynamicPVRestoreLabel` needs to be set on the restore PV
-	  - Generic restore exposer reads the selector back from the target PVC: In <https://github.com/vmware-tanzu/velero/blob/main/pkg/exposer/generic_restore.go#L443-L449>, `RebindVolume()` extracts `targetPVC.Spec.Selector.MatchLabels` and passes it to `ResetPVBinding()`.
-	  - `ResetPVBinding()` copies the labels onto the PV: In <https://github.com/vmware-tanzu/velero/blob/main/pkg/util/kube/pvc_pv.go#L226-L270>, the labels (including `DynamicPVRestoreLabel`) are copied from the PVC selector to the PV's labels, and ClaimRef is reset so Kubernetes can bind them.
-    - Size based on the `pvcSizes` metadata in the BSL.
+  - (this area is less well defined so far, since the kubevirt enhancement doesn't go into as much detail on restore)
+  - We will need a temporary PVC for pulling qcow2 images from object store (if we're restoring the empty temp PVC from backup, that might work here)
+  - We also need PVCs created for each VM disk we're restoring from qcow2 images.
   - We'll need to create another datamover pod here which will do the following:
-    - The pod permissions will need to be the same as we have for velero datamover (run as root, selinux config etc.)
-    - The pod will have temp PVC mounted, as well as PVCs mounted for each vm disk we're creating.
-    - The pod running command/image will first get the list of qcow2 files to pull from object storage
-	- Process one PVC at a time:
-      - Download all required qcow2 files for this PVC from object storage.
-      - Validate the checkpoint chain from the per-VM manifest (`checkpointChain`)
-        before rebasing: verify every intermediate file is present on disk and each
-        is a readable qcow2 image (`qemu-img info` succeeds). The `-u` (unsafe)
-        rebase flag skips all validation, so missing or corrupt intermediates cause
-        silent data loss.
-      - Build the backing chain by rebasing each incremental onto its parent (not
-        all onto the full backup — that loses intermediate changes):
-        - `qemu-img rebase -b full.qcow2 -F qcow2 -f qcow2 -u inc1.qcow2`
-        - `qemu-img rebase -b inc1.qcow2 -F qcow2 -f qcow2 -u inc2.qcow2`
-        - (continue for each incremental in chain order)
-      - Convert the top-of-chain directly to the target block device (no
-        intermediate raw file or `dd` needed):
-        - `qemu-img convert -f qcow2 -O raw incN.qcow2 /dev/target_pvc_block_device`
-      - Delete all qcow2 files from scratch space.
-      - References:
-        - Chained rebase approach: [KubeVirt VEP — Restore from Backup](https://github.com/kubevirt/enhancements/blob/main/veps/sig-storage/incremental-backup.md?plain=1#L443-L466)
-        - `-F` backing format flag required since [QEMU 6.1](https://wiki.qemu.org/ChangeLog/6.1#Block_layer); see [qemu-img rebase docs](https://www.qemu.org/docs/master/tools/qemu-img.html#cmdoption-qemu-img-commands-arg-F)
-        - Workflow validated with synthetic qcow2 files: [validation gist](https://gist.github.com/kaovilai/5ac5d2563d4d3c60be090475f2ac2c06)
+    - pod will have temp PVC mounted, as well as PVCs mounted for each vm disk we're creating.
+    - pod running command/image will first get the list of qcow2 files to pull from object storage
+    - once we have the qcow2 full backup and incremental files from object store, repeatedly call `qemu-img rebase -b fullbackup.qcow2 -f qcow2 -u incrementalN.qcow2` for each incremental backup, in order
+    - Then, convert qcow2 image to raw disk image: `qemu-img convert -f qcow2 -O raw fullbackup.qcow2 restored-raw.img`
+    - Finally, write this image to the PVC which contains the VM disk
+    - (repeat process for each disk if VM has multiple disks to restore)
     - Note that the various `qemu-img` actions might eventually be combined into a single kubevirt API call, but for the moment this would need to be done manually.
-  - Once datamover pod has restored the VM disks, it will exit, the temporary PVCs will be deleted, leaving the restored PVs but deleting the qcow2 staging PV.
+  - Once datamover pod has restored the VM disks, it will exit and the VirtualMachine can launch with these disks (following the velero datamover model where the temporary PVC is deleted, retaining the PV, which then binds to the VM's PVCs may work here). The temporary PVC (containing the qcow2 images, not the restored VM disk image) should be completely removed at this point, including PV content.
 
 ### Kubevirt datamover backup data/metadata
 
@@ -168,7 +133,6 @@ Per-VM Index (checkpoints/<ns>/<vm-name>/index.json):
       "vmBackup": "vmb-001",
       "files": ["vmb-001-disk0.qcow2", "vmb-001-disk1.qcow2"],
       "pvcs": ["my-vm-pvc-0", "my-vm-pvc-1"],
-      "pvcSizes": ["10Gi", "20Gi"],
       "referencedBy": ["backup-2025-01-10", "backup-2025-01-11", "backup-2025-01-12"]
     },
     {
@@ -179,7 +143,6 @@ Per-VM Index (checkpoints/<ns>/<vm-name>/index.json):
       "vmBackup": "vmb-002",
       "files": ["vmb-002-disk0.qcow2", "vmb-002-disk1.qcow2"],
       "pvcs": ["my-vm-pvc-0", "my-vm-pvc-1"],
-      "pvcSizes": ["10Gi", "20Gi"],
       "referencedBy": ["backup-2025-01-11", "backup-2025-01-12"]
     },
     {
@@ -190,7 +153,6 @@ Per-VM Index (checkpoints/<ns>/<vm-name>/index.json):
       "vmBackup": "vmb-003",
       "files": ["vmb-003-disk0.qcow2", "vmb-003-disk1.qcow2"],
       "pvcs": ["my-vm-pvc-0", "my-vm-pvc-1"],
-      "pvcSizes": ["10Gi", "20Gi"],
       "referencedBy": ["backup-2025-01-12"]
     }
   ]

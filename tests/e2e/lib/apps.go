@@ -378,9 +378,11 @@ func PrintNamespaceEventsAfterTime(c *kubernetes.Clientset, namespace string, st
 }
 
 func RunMustGather(artifact_dir string, clusterClient client.Client) error {
+	// Use MUST_GATHER_IMAGE env var, default to quay.io/konveyor/oadp-must-gather:oadp-1.6
+	// For version-specific testing: MUST_GATHER_IMAGE=quay.io/konveyor/oadp-must-gather:oadp-1.5
 	mustGatherImage := os.Getenv("MUST_GATHER_IMAGE")
 	if mustGatherImage == "" {
-		mustGatherImage = "quay.io/konveyor/oadp-must-gather:latest"
+		mustGatherImage = "quay.io/konveyor/oadp-must-gather:oadp-1.6"
 	}
 
 	log.Printf("Running must-gather with image: %s", mustGatherImage)

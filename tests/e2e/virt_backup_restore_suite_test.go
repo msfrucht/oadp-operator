@@ -75,10 +75,9 @@ func vmPoweredOff(vmnamespace, vmname string) VerificationFunction {
 
 type VmBackupRestoreCase struct {
 	BackupRestoreCase
-	Template       string
-	InitDelay      time.Duration
-	StartupTimeout time.Duration
-	PowerState     string
+	Template   string
+	InitDelay  time.Duration
+	PowerState string
 }
 
 func runVmBackupAndRestore(brCase VmBackupRestoreCase, updateLastBRcase func(brCase VmBackupRestoreCase), v *lib.VirtOperator) {
@@ -107,11 +106,7 @@ func runVmBackupAndRestore(brCase VmBackupRestoreCase, updateLastBRcase func(brC
 	// Wait for VM to start, then give some time for cloud-init to run.
 	// Afterward, run through the standard application verification to make sure
 	// the application itself is working correctly.
-	startupTimeout := brCase.StartupTimeout
-	if startupTimeout == 0 {
-		startupTimeout = 10 * time.Minute
-	}
-	err = wait.PollUntilContextTimeout(context.Background(), 10*time.Second, startupTimeout, true, func(ctx context.Context) (bool, error) {
+	err = wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 10*time.Minute, true, func(ctx context.Context) (bool, error) {
 		status, err := v.GetVmStatus(brCase.Namespace, brCase.Name)
 		return status == "Running", err
 	})
@@ -487,9 +482,8 @@ var _ = ginkgo.Describe("VM backup and restore tests", ginkgo.Ordered, func() {
 		}, nil),
 
 		ginkgo.PEntry("todolist CSI backup and restore, in a Fedora VM", ginkgo.Label("virt"), VmBackupRestoreCase{
-			Template:       "./sample-applications/virtual-machines/fedora-todolist/fedora-todolist.yaml",
-			InitDelay:      3 * time.Minute, // For cloud-init
-			StartupTimeout: 20 * time.Minute,
+			Template:  "./sample-applications/virtual-machines/fedora-todolist/fedora-todolist.yaml",
+			InitDelay: 3 * time.Minute, // For cloud-init
 			BackupRestoreCase: BackupRestoreCase{
 				Namespace:         "mysql-persistent",
 				Name:              "fedora-todolist",

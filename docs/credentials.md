@@ -208,7 +208,7 @@ spec:
       noDefaultBackupLocation: true
     nodeAgent:
       enable: true
-      uploaderType: kopia
+      uploaderType: restic
 ```
 If you don't need volumesnapshotlocation, you will not need to create a VSL credentials.
 
