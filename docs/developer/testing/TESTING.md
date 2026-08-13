@@ -28,9 +28,9 @@ To get started, you need to provide the following **required** environment varia
 | `TEST_UPGRADE` | Exclusively run upgrade tests. Need to first run `make catalog-test-upgrade`, if testing non production operator | `false` | false |
 | `TEST_CLI` | Exclusively run CLI-based backup/restore testing | `false` | false |
 | `SKIP_MUST_GATHER` | Skip running must-gather collection during E2E tests | `false` | false |
-| `MUST_GATHER_IMAGE` | Container image to use for must-gather collection via `oc adm must-gather` | `quay.io/konveyor/oadp-must-gather:oadp-1.6` | false |
+| `MUST_GATHER_IMAGE` | Container image to use for must-gather collection via `oc adm must-gather` | `quay.io/konveyor/oadp-must-gather:latest` | false |
 | `MUST_GATHER_REPO` | GitHub repo (e.g., `openshift/oadp-must-gather`) to build must-gather from source. Sets `MUST_GATHER_IMAGE` to a ttl.sh image automatically | - | false |
-| `MUST_GATHER_BRANCH` | Branch to use when building from `MUST_GATHER_REPO` | `oadp-1.6` | false |
+| `MUST_GATHER_BRANCH` | Branch to use when building from `MUST_GATHER_REPO` | `oadp-dev` | false |
 
 > **Note:**
 
@@ -286,7 +286,7 @@ Example Configuration: **e2e_suite_test.go**
 ```go
 func init() {
 	flag.StringVar(&cloud, "cloud", "/home/user/oadp_e2e/aws_credentials", "Cloud Credentials file path location")
-	flag.StringVar(&namespace, "velero_namespace", "oadp-operator", "DPA Namespace")
+	flag.StringVar(&namespace, "velero_namespace", "openshift-adp", "DPA Namespace")
 	flag.StringVar(&settings, "settings", "./templates/default_settings.json", "Settings of the velero instance")
 	flag.StringVar(&instanceName, "velero_instance_name", "example-velero", "Velero Instance Name")
 	flag.StringVar(&clusterProfile, "cluster_profile", "aws", "Cluster profile")
@@ -296,7 +296,7 @@ func init() {
 Example settings file could be found under oadp-operator/tests/e2e/templates/default_settings.json, and can be overridden used with different providers with similar structure.
 
 
-* Note that your shell overrides documented [here](https://github.com/openshift/oadp-operator/blob/oadp-dev/docs/developer/TESTING.md) are not accessible to Visual Studio Code.
+* Note that your shell overrides documented [here](TESTING.md) are not accessible to Visual Studio Code.
 
 ### Execute
 

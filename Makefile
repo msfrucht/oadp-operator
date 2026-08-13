@@ -7,8 +7,9 @@ ENVTEST_K8S_VERSION = 1.35 #refers to the version of kubebuilder assets to be do
 GOLANGCI_LINT_VERSION ?= v2.9.0
 KUSTOMIZE_VERSION ?= v5.2.1
 CONTROLLER_TOOLS_VERSION ?= v0.16.5
-OPM_VERSION ?= v1.23.0
-BRANCH_VERSION = oadp-1.6
+# Also defined in build/Dockerfile.catalog — keep in sync
+OPM_VERSION ?= v1.68.0
+BRANCH_VERSION = oadp-dev
 PREVIOUS_CHANNEL ?= oadp-1.5
 PREVIOUS_CHANNEL_GO_VERSION ?= 1.23
 # Extract the toolchain directive from go.mod
@@ -416,6 +417,42 @@ catalog-build: opm ## Build a catalog image.
 	$(OPM) generate dockerfile catalog/ --binary-image=quay.io/operator-framework/opm:$(OPM_VERSION)
 	$(CONTAINER_TOOL) build --load $(DOCKER_BUILD_ARGS) -f catalog.Dockerfile -t $(CATALOG_IMG) .
 	rm -rf catalog.Dockerfile catalog/
+
+# Build a catalog image using build/Dockerfile.catalog (self-contained, used by CI).
+# Passes OPM_VERSION from this Makefile to keep the two in sync.
+#
+# Use case: test the same Dockerfile that CI uses, locally.
+#   make catalog-fbc-build BUNDLE_IMG=quay.io/konveyor/oadp-operator-bundle:latest
+#   make catalog-push
+#
+# Then install on-cluster:
+#   OLMv0 (CatalogSource + Subscription):
+#     make deploy-olm CATALOG_IMG=$(CATALOG_IMG)
+#   OLMv1 (ClusterExtension):
+#     kubectl apply -f - <<EOF
+#     apiVersion: olm.operatorframework.io/v1
+#     kind: ClusterExtension
+#     metadata:
+#       name: oadp-operator
+#     spec:
+#       source:
+#         sourceType: Catalog
+#         catalog:
+#           packageName: oadp-operator
+#       install:
+#         namespace: openshift-adp
+#         serviceAccount:
+#           name: oadp-operator-controller-manager
+#     EOF
+.PHONY: catalog-fbc-build
+catalog-fbc-build: ## Build a catalog image from build/Dockerfile.catalog.
+	$(CONTAINER_TOOL) build --load $(DOCKER_BUILD_ARGS) \
+		-f build/Dockerfile.catalog \
+		--build-arg BUNDLE_IMG=$(BUNDLE_IMG) \
+		--build-arg OPM_VERSION=$(OPM_VERSION) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg DEFAULT_CHANNEL=$(DEFAULT_CHANNEL) \
+		-t $(CATALOG_IMG) .
 
 # Push the catalog image.
 .PHONY: catalog-push
@@ -937,11 +974,11 @@ HCP_EXTERNAL_ARGS ?= ""
 TEST_CLI ?= false
 SKIP_MUST_GATHER   ?= false
 MUST_GATHER_REPO   ?=
-MUST_GATHER_BRANCH ?= oadp-1.6
+MUST_GATHER_BRANCH ?= oadp-dev
 ifneq ($(MUST_GATHER_REPO),)
 MUST_GATHER_IMAGE  ?= ttl.sh/oadp-must-gather-$(MUST_GATHER_BRANCH)-$(GIT_REV):$(TTL_DURATION)
 else
-MUST_GATHER_IMAGE  ?= quay.io/konveyor/oadp-must-gather:oadp-1.6
+MUST_GATHER_IMAGE  ?= quay.io/konveyor/oadp-must-gather:latest
 endif
 TEST_UPGRADE ?= false
 FAIL_FAST ?= true
@@ -988,7 +1025,7 @@ GINKGO_FLAGS = --vv \
 	--timeout=2h
 
 .PHONY: build-must-gather
-build-must-gather: ## Build must-gather image from GitHub source. Requires MUST_GATHER_REPO (e.g., openshift/oadp-must-gather). Uses MUST_GATHER_BRANCH (default: oadp-1.6).
+build-must-gather: ## Build must-gather image from GitHub source. Requires MUST_GATHER_REPO (e.g., openshift/oadp-must-gather). Uses MUST_GATHER_BRANCH (default: main).
 ifeq ($(MUST_GATHER_REPO),)
 	$(error MUST_GATHER_REPO is required (e.g., openshift/oadp-must-gather))
 endif
@@ -1042,6 +1079,8 @@ test-e2e-cleanup: login-required
 	$(OC_CLI) delete datadownload -n $(OADP_TEST_NAMESPACE) --all
 	$(OC_CLI) delete restore -n $(OADP_TEST_NAMESPACE) --all --wait=false
 	for restore_name in $(shell $(OC_CLI) get restore -n $(OADP_TEST_NAMESPACE) -o name);do $(OC_CLI) patch "$$restore_name" -n $(OADP_TEST_NAMESPACE) -p '{"metadata":{"finalizers":null}}' --type=merge;done
+	$(OC_CLI) delete ns mongo-persistent --ignore-not-found=true
+	$(OC_CLI) delete ns mysql-persistent --ignore-not-found=true
 	rm -rf $(SETTINGS_TMP)
 
 .PHONY: update-non-admin-manifests
@@ -1106,4 +1145,3 @@ endif
 	@cp $(KUBEVIRT_DATAMOVER_PATH)/config/rbac/kustomization.yaml $(shell pwd)/config/kubevirt-datamover-controller_rbac/kustomization.yaml
 	@$(SED) -i '1i namePrefix: oadp-kubevirt-datamover-' $(shell pwd)/config/kubevirt-datamover-controller_rbac/kustomization.yaml
 	@make bundle
-
