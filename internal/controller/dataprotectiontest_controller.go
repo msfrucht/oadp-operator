@@ -29,6 +29,7 @@ import (
 	"github.com/hashicorp/go-multierror"
 	snapshotv1api "github.com/kubernetes-csi/external-snapshotter/client/v6/apis/volumesnapshot/v1"
 	velerov1 "github.com/vmware-tanzu/velero/pkg/apis/velero/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -142,9 +143,15 @@ func (r *DataProtectionTestReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, fmt.Errorf("resolved BackupLocationSpec is nil")
 	}
 
+	// Retrieve the CAs if provided
+	caPEMData, err := r.retrieveCAData(ctx, resolvedBackupLocationSpec)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("Unable to retrieve CA data from BSL %v", err)
+	}
+
 	// Determine S3-compatible vendor (if applicable)
 	if strings.EqualFold(resolvedBackupLocationSpec.Provider, AWSProvider) {
-		if err := r.determineVendor(ctx, r.dpt, resolvedBackupLocationSpec); err != nil {
+		if err := r.determineVendor(ctx, r.dpt, resolvedBackupLocationSpec, caPEMData); err != nil {
 			logger.Error(err, "S3 vendor detection failed")
 		}
 	}
@@ -219,7 +226,7 @@ func (r *DataProtectionTestReconciler) SetupWithManager(mgr ctrl.Manager) error 
 // determineVendor sends a HEAD request to the provided s3Url in the BackupLocationSpec config,
 // extracts the Server header and known fallback headers to set the detected vendor (e.g., AWS, MinIO, Ceph) in the DPT status.
 // Only applicable for aws-compatible BSLs.
-func (r *DataProtectionTestReconciler) determineVendor(ctx context.Context, dpt *oadpv1alpha1.DataProtectionTest, backupLocationSpec *velerov1.BackupStorageLocationSpec) error {
+func (r *DataProtectionTestReconciler) determineVendor(ctx context.Context, dpt *oadpv1alpha1.DataProtectionTest, backupLocationSpec *velerov1.BackupStorageLocationSpec, caCertData []byte) error {
 	s3Url := backupLocationSpec.Config["s3Url"]
 
 	// Fallback to AWS default endpoint if missing
@@ -242,7 +249,7 @@ func (r *DataProtectionTestReconciler) determineVendor(ctx context.Context, dpt 
 	}
 
 	// Build HTTP client with TLS configuration
-	httpClient, err := buildHTTPClientWithTLS(dpt, backupLocationSpec, r.Log)
+	httpClient, err := buildHTTPClientWithTLS(dpt, backupLocationSpec, r.Log, caCertData)
 	if err != nil {
 		return fmt.Errorf("failed to build HTTP client with TLS: %w", err)
 	}
@@ -289,10 +296,14 @@ func (r *DataProtectionTestReconciler) initializeProvider(ctx context.Context, b
 	providerName := strings.ToLower(backupLocationSpec.Provider)
 
 	//TODO handle credential when not specified
+	caCertData, err := r.retrieveCAData(ctx, backupLocationSpec)
+	if err != nil {
+		return nil, fmt.Errorf("cannot retrieve CA Certificate data: %s", err.Error())
+	}
 
 	switch providerName {
 	case AWSProvider:
-		return r.initializeAWSProvider(ctx, backupLocationSpec)
+		return r.initializeAWSProvider(ctx, backupLocationSpec, caCertData)
 	case GCPProvider:
 		return r.initializeGCPProvider(ctx, backupLocationSpec)
 	case AzureProvider:
@@ -304,7 +315,7 @@ func (r *DataProtectionTestReconciler) initializeProvider(ctx context.Context, b
 }
 
 // initializeAWSProvider initializes an AWS CloudProvider using credentials and configuration
-func (r *DataProtectionTestReconciler) initializeAWSProvider(ctx context.Context, backupLocationSpec *velerov1.BackupStorageLocationSpec) (cloudprovider.CloudProvider, error) {
+func (r *DataProtectionTestReconciler) initializeAWSProvider(ctx context.Context, backupLocationSpec *velerov1.BackupStorageLocationSpec, caCertData []byte) (cloudprovider.CloudProvider, error) {
 	r.Log.Info("Initializing AWS provider")
 
 	if backupLocationSpec.Credential == nil {
@@ -353,7 +364,7 @@ func (r *DataProtectionTestReconciler) initializeAWSProvider(ctx context.Context
 	}
 
 	// Create AWS session with TLS configuration
-	sess, err := buildAWSSessionWithTLS(r.dpt, backupLocationSpec, region, s3Url, r.Log)
+	sess, err := buildAWSSessionWithTLS(r.dpt, backupLocationSpec, region, s3Url, r.Log, caCertData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AWS session with TLS: %w", err)
 	}
@@ -713,4 +724,36 @@ func (r *DataProtectionTestReconciler) updateDPTStatusToComplete(ctx context.Con
 
 		return r.Status().Update(ctx, latest)
 	})
+}
+
+// Retrieve the CaCert data as the TLSConfig module does not have Secret retrieval interface.
+func (r *DataProtectionTestReconciler) retrieveCAData(ctx context.Context, backupLocationSpec *velerov1.BackupStorageLocationSpec) ([]byte, error) {
+	if backupLocationSpec == nil || backupLocationSpec.ObjectStorage == nil {
+		return nil, nil
+	}
+
+	// Velero currently uses the order of CaCertRef takes priority followed by CaCert
+	if backupLocationSpec.ObjectStorage.CACertRef != nil {
+		return r.retrieveSecretReferenceData(ctx, backupLocationSpec.ObjectStorage.CACertRef)
+	}
+
+	if backupLocationSpec.ObjectStorage.CACert != nil {
+		return backupLocationSpec.ObjectStorage.CACert, nil
+	}
+
+	// no CaCert information
+	return nil, nil
+}
+
+// Retrieves the SecretKeySelector data
+func (r *DataProtectionTestReconciler) retrieveSecretReferenceData(ctx context.Context, secretKeySelector *corev1.SecretKeySelector) ([]byte, error) {
+	secret, err := utils.GetProviderSecret(secretKeySelector.Name, r.NamespacedName.Namespace, r.Client, ctx)
+	if err != nil {
+		return nil, err
+	}
+	caCertBytes, found := secret.Data[secretKeySelector.Key]
+	if !found {
+		return nil, fmt.Errorf("no data found at key %s", secretKeySelector.Key)
+	}
+	return caCertBytes, nil
 }
