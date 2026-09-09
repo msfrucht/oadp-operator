@@ -33,24 +33,24 @@ import (
 // buildTLSConfig creates a TLS configuration based on the DPT spec and BSL spec.
 // Priority order:
 // 1. If skipTLSVerify is true → InsecureSkipVerify: true
-// 2. If BSL has caCert → Use custom CA cert
+// 2. If BSL has caCert → Use custom CA cert with system certs
 // 3. Otherwise → Use system certs (default)
 func buildTLSConfig(dpt *oadpv1alpha1.DataProtectionTest, bsl *velerov1.BackupStorageLocationSpec, logger logr.Logger, caCertData []byte) (*tls.Config, error) {
 	tlsConfig := &tls.Config{}
-	// Priority 1: Load default system CA certificates.
+	// Priority 3: Load default system CA certificates.
 	caCertPool, err := x509.SystemCertPool()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load system certificate pool %v", err)
 	}
 
-	// Priority 2: Check if skipTLSVerify is set
+	// Priority 1: Check if skipTLSVerify is set
 	if dpt.Spec.SkipTLSVerify {
 		logger.Info("TLS verification disabled via skipTLSVerify")
 		tlsConfig.InsecureSkipVerify = true
 		return tlsConfig, nil
 	}
 
-	// Priority 3: Check for custom CA cert in retrieved by the controller from BSL or SecretKeySelector and append.
+	// Priority 2: Check for custom CA cert in retrieved by the controller from BSL or SecretKeySelector and append.
 	// caCertData should be passed as parameter to handle the BSL CAData and CACertRef fields
 	if len(caCertData) > 0 {
 		logger.Info("Custom CA certificate found in param")
